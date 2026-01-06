@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# user_id -> path to temp image
 user_image_files: dict[int, str] = {}
 
 
@@ -35,7 +34,11 @@ def render_progress(current: int, total: int, width: int = 16) -> str:
     percent = int(current / total * 100)
     filled = int(width * percent / 100)
     bar = "█" * filled + "░" * (width - filled)
-    return f"{bar} {percent}%\n{current} / {total}"
+    return (
+        "🧩 Создаю emoji‑pack\n"
+        f"{bar} {percent}%\n"
+        f"{current} / {total}"
+    )
 
 
 # =====================================================
@@ -44,9 +47,7 @@ def render_progress(current: int, total: int, width: int = 16) -> str:
 
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer(
-        "👋 Отправь изображение — я превращу его в emoji‑pack."
-    )
+    await message.answer("👋 Отправь изображение — я превращу его в emoji‑pack.")
 
 
 # =====================================================
@@ -118,19 +119,15 @@ async def handle_grid(callback: CallbackQuery):
         fragments = process_image(path, cols, rows)
         total = len(fragments)
 
-        # --- прогресс загрузки ---
-        async def progress_cb(current: int):
-            await status.edit_text(
-                "🧩 Создаю emoji‑pack\n"
-                + render_progress(current, total)
-            )
+        async def progress_cb(current: int, total: int):
+            await status.edit_text(render_progress(current, total))
 
         pack_link = await create_emoji_pack(
             bot=bot,
             fragments=fragments,
             user_id=user_id,
             user_username=callback.from_user.username,
-            progress_cb=progress_cb,  # ← КЛЮЧЕВО
+            progress_cb=progress_cb,
         )
 
         await status.edit_text(
