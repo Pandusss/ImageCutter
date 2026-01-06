@@ -27,35 +27,35 @@ dp = Dispatcher()
 user_image_files: dict[int, str] = {}
 
 
-# =========================
+# =====================================================
+# PROGRESS BAR
+# =====================================================
+
+def render_progress(current: int, total: int, width: int = 16) -> str:
+    percent = int(current / total * 100)
+    filled = int(width * percent / 100)
+    bar = "█" * filled + "░" * (width - filled)
+    return f"{bar} {percent}%\n{current} / {total}"
+
+
+# =====================================================
 # COMMANDS
-# =========================
+# =====================================================
 
 @dp.message(Command("start"))
 async def start(message: Message):
     await message.answer(
-        "👋 Отправь изображение — я превращу его в emoji‑pack.\n\n"
-        "Поддерживаются photo и document."
+        "👋 Отправь изображение — я превращу его в emoji‑pack."
     )
 
 
-@dp.message(Command("help"))
-async def help_cmd(message: Message):
-    await message.answer(
-        "1️⃣ Отправь изображение\n"
-        "2️⃣ Выбери сетку\n"
-        "3️⃣ Получи ссылку на emoji‑pack\n\n"
-        "⚠️ Требуется Telegram Premium"
-    )
-
-
-# =========================
+# =====================================================
 # IMAGE HANDLING
-# =========================
+# =====================================================
 
 @dp.message(F.photo | F.document)
 async def handle_image(message: Message):
-    status = await message.answer("⏳ Загружаю изображение...")
+    status = await message.answer("⏳ Загружаю изображение…")
 
     try:
         file = message.photo[-1] if message.photo else message.document
@@ -88,12 +88,12 @@ async def handle_image(message: Message):
 
     except Exception as e:
         await status.edit_text(f"❌ {e}")
-        logger.exception("Image processing error")
+        logger.exception("Image error")
 
 
-# =========================
+# =====================================================
 # CALLBACKS
-# =========================
+# =====================================================
 
 @dp.callback_query(F.data.startswith("grid_"))
 async def handle_grid(callback: CallbackQuery):
@@ -112,29 +112,36 @@ async def handle_grid(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_reply_markup()
 
-    status = await callback.message.edit_text(
-        f"⏳ Создаю emoji‑pack ({cols}×{rows})..."
-    )
+    status = await callback.message.edit_text("🧩 Подготовка…")
 
     try:
         fragments = process_image(path, cols, rows)
+        total = len(fragments)
+
+        # --- прогресс загрузки ---
+        async def progress_cb(current: int):
+            await status.edit_text(
+                "🧩 Создаю emoji‑pack\n"
+                + render_progress(current, total)
+            )
 
         pack_link = await create_emoji_pack(
             bot=bot,
             fragments=fragments,
             user_id=user_id,
             user_username=callback.from_user.username,
+            progress_cb=progress_cb,  # ← КЛЮЧЕВО
         )
 
         await status.edit_text(
             f"✅ Готово!\n\n"
-            f"🧩 Эмодзи: {len(fragments)}\n"
+            f"🧩 Эмодзи: {total}\n"
             f"🔗 {pack_link}"
         )
 
     except Exception as e:
         await status.edit_text(f"❌ {e}")
-        logger.exception("Pack creation error")
+        logger.exception("Pack error")
 
     finally:
         cleanup(path)
@@ -169,31 +176,27 @@ async def show_all_sizes(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
+# =====================================================
 # KEYBOARD
-# =========================
+# =====================================================
 
 def build_grid_keyboard(
     user_id: int,
     width: int,
     height: int,
-    mode: str = "optimal",  # optimal | all
+    mode: str = "optimal",
 ) -> InlineKeyboardMarkup:
     max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
     max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    buttons: list[list[InlineKeyboardButton]] = []
-    row: list[InlineKeyboardButton] = []
-
+    buttons, row = [], []
     optimal_totals = {12, 16, 20, 24, 30, 36}
 
     for cols in range(2, max_cols + 1):
         for rows in range(2, max_rows + 1):
             total = cols * rows
-
             if not (12 <= total <= 48):
                 continue
-
             if mode == "optimal" and total not in optimal_totals:
                 continue
 
@@ -213,20 +216,18 @@ def build_grid_keyboard(
 
     if mode == "optimal":
         buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="➕ Показать все размеры",
-                    callback_data=f"show_all_{user_id}",
-                )
-            ]
+            [InlineKeyboardButton(
+                text="➕ Показать все размеры",
+                callback_data=f"show_all_{user_id}",
+            )]
         )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# =========================
+# =====================================================
 # UTILS
-# =========================
+# =====================================================
 
 def cleanup(path: str):
     try:
@@ -236,9 +237,9 @@ def cleanup(path: str):
         pass
 
 
-# =========================
+# =====================================================
 # ENTRYPOINT
-# =========================
+# =====================================================
 
 async def main():
     await dp.start_polling(bot)
