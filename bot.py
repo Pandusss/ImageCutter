@@ -206,40 +206,54 @@ def build_grid_keyboard(
     max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
     max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    buttons, row = [], []
     optimal_totals = {12, 16, 20, 24, 30, 36}
+
+    all_buttons: list[InlineKeyboardButton] = []
+    optimal_buttons: list[InlineKeyboardButton] = []
 
     for cols in range(2, max_cols + 1):
         for rows in range(2, max_rows + 1):
             total = cols * rows
-            if not (12 <= total <= 48):
-                continue
-            if mode == "optimal" and total not in optimal_totals:
+
+            if not (4 <= total <= 48):
                 continue
 
-            row.append(
-                InlineKeyboardButton(
-                    text=f"{cols}×{rows}",
-                    callback_data=f"grid_{user_id}_{cols}_{rows}",
-                )
+            btn = InlineKeyboardButton(
+                text=f"{cols}×{rows}",
+                callback_data=f"grid_{user_id}_{cols}_{rows}",
             )
 
-            if len(row) == 3:
-                buttons.append(row)
-                row = []
+            all_buttons.append(btn)
+
+            if total in optimal_totals:
+                optimal_buttons.append(btn)
+
+    # --- выбираем, что показывать ---
+    buttons_source = optimal_buttons if (mode == "optimal" and optimal_buttons) else all_buttons
+
+    # --- группируем по 3 ---
+    keyboard: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+
+    for btn in buttons_source:
+        row.append(btn)
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
 
     if row:
-        buttons.append(row)
+        keyboard.append(row)
 
-    if mode == "optimal":
-        buttons.append(
+    # --- кнопка "показать все" ---
+    if mode == "optimal" and optimal_buttons and len(all_buttons) > len(optimal_buttons):
+        keyboard.append(
             [InlineKeyboardButton(
                 text="➕ Показать все размеры",
                 callback_data=f"show_all_{user_id}",
             )]
         )
 
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 # =====================================================
