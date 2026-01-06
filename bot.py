@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import tempfile
 
 from aiogram import Bot, Dispatcher, F
@@ -137,8 +138,27 @@ async def handle_grid(callback: CallbackQuery):
         )
 
     except Exception as e:
-        await status.edit_text(f"❌ {e}")
-        logger.exception("Pack error")
+        # =================================================
+        # FLOOD CONTROL HANDLING
+        # =================================================
+        text = str(e)
+
+        if "Too Many Requests" in text or "Flood control exceeded" in text:
+            match = re.search(r"retry after (\d+)", text, re.IGNORECASE)
+            seconds = int(match.group(1)) if match else 1800
+            minutes = max(1, seconds // 60)
+
+            await status.edit_text(
+                "⏳ Telegram временно ограничил создание emoji‑packs.\n\n"
+                f"Попробуй снова через ~{minutes} минут."
+            )
+
+            logger.warning(
+                "Flood control triggered: retry after %s seconds", seconds
+            )
+        else:
+            await status.edit_text(f"❌ {e}")
+            logger.exception("Pack error")
 
     finally:
         cleanup(path)
