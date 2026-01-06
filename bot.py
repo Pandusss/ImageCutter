@@ -11,7 +11,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.exceptions import TelegramAPIError
 from PIL import Image
 
 from config import BOT_TOKEN
@@ -24,8 +23,13 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# user_id -> path to temp image
 user_image_files: dict[int, str] = {}
 
+
+# =========================
+# COMMANDS
+# =========================
 
 @dp.message(Command("start"))
 async def start(message: Message):
@@ -44,6 +48,10 @@ async def help_cmd(message: Message):
         "⚠️ Требуется Telegram Premium"
     )
 
+
+# =========================
+# IMAGE HANDLING
+# =========================
 
 @dp.message(F.photo | F.document)
 async def handle_image(message: Message):
@@ -70,6 +78,7 @@ async def handle_image(message: Message):
             user_id=message.from_user.id,
             width=width,
             height=height,
+            mode="optimal",
         )
 
         await status.edit_text(
@@ -82,13 +91,63 @@ async def handle_image(message: Message):
         logger.exception("Image processing error")
 
 
+# =========================
+# CALLBACKS
+# =========================
+
+@dp.callback_query(F.data.startswith("grid_"))
+async def handle_grid(callback: CallbackQuery):
+    _, user_id, cols, rows = callback.data.split("_")
+    user_id, cols, rows = int(user_id), int(cols), int(rows)
+
+    if callback.from_user.id != user_id:
+        await callback.answer("Не твоё изображение", show_alert=True)
+        return
+
+    path = user_image_files.get(user_id)
+    if not path or not os.path.exists(path):
+        await callback.answer("Файл не найден", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.edit_reply_markup()
+
+    status = await callback.message.edit_text(
+        f"⏳ Создаю emoji‑pack ({cols}×{rows})..."
+    )
+
+    try:
+        fragments = process_image(path, cols, rows)
+
+        pack_link = await create_emoji_pack(
+            bot=bot,
+            fragments=fragments,
+            user_id=user_id,
+            user_username=callback.from_user.username,
+        )
+
+        await status.edit_text(
+            f"✅ Готово!\n\n"
+            f"🧩 Эмодзи: {len(fragments)}\n"
+            f"🔗 {pack_link}"
+        )
+
+    except Exception as e:
+        await status.edit_text(f"❌ {e}")
+        logger.exception("Pack creation error")
+
+    finally:
+        cleanup(path)
+        user_image_files.pop(user_id, None)
+
+
 @dp.callback_query(F.data.startswith("show_all_"))
 async def show_all_sizes(callback: CallbackQuery):
-    _, user_id = callback.data.split("_")
+    _, _, user_id = callback.data.split("_", 2)
     user_id = int(user_id)
 
     if callback.from_user.id != user_id:
-        await callback.answer("Не твое изображение", show_alert=True)
+        await callback.answer("Не твоё изображение", show_alert=True)
         return
 
     path = user_image_files.get(user_id)
@@ -110,6 +169,10 @@ async def show_all_sizes(callback: CallbackQuery):
     await callback.answer()
 
 
+# =========================
+# KEYBOARD
+# =========================
+
 def build_grid_keyboard(
     user_id: int,
     width: int,
@@ -122,16 +185,16 @@ def build_grid_keyboard(
     buttons: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
 
+    optimal_totals = {12, 16, 20, 24, 30, 36}
+
     for cols in range(2, max_cols + 1):
         for rows in range(2, max_rows + 1):
             total = cols * rows
 
-            # Ограничения Telegram
             if not (12 <= total <= 48):
                 continue
 
-            # ✅ В режиме optimal показываем только "хорошие" варианты
-            if mode == "optimal" and total not in {12, 16, 20, 24, 30, 36}:
+            if mode == "optimal" and total not in optimal_totals:
                 continue
 
             row.append(
@@ -148,7 +211,6 @@ def build_grid_keyboard(
     if row:
         buttons.append(row)
 
-    # ✅ Кнопка "Показать все размеры"
     if mode == "optimal":
         buttons.append(
             [
@@ -162,6 +224,10 @@ def build_grid_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# =========================
+# UTILS
+# =========================
+
 def cleanup(path: str):
     try:
         os.remove(path)
@@ -169,6 +235,10 @@ def cleanup(path: str):
     except Exception:
         pass
 
+
+# =========================
+# ENTRYPOINT
+# =========================
 
 async def main():
     await dp.start_polling(bot)
