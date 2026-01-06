@@ -82,10 +82,10 @@ async def handle_image(message: Message):
         logger.exception("Image processing error")
 
 
-@dp.callback_query(F.data.startswith("grid_"))
-async def handle_grid(callback: CallbackQuery):
-    _, user_id, cols, rows = callback.data.split("_")
-    user_id, cols, rows = int(user_id), int(cols), int(rows)
+@dp.callback_query(F.data.startswith("show_all_"))
+async def show_all_sizes(callback: CallbackQuery):
+    _, user_id = callback.data.split("_")
+    user_id = int(user_id)
 
     if callback.from_user.id != user_id:
         await callback.answer("Не твое изображение", show_alert=True)
@@ -96,61 +96,68 @@ async def handle_grid(callback: CallbackQuery):
         await callback.answer("Файл не найден", show_alert=True)
         return
 
-    await callback.answer()
-    await callback.message.edit_reply_markup()
+    image = Image.open(path)
+    width, height = image.size
 
-    status = await callback.message.edit_text(
-        f"⏳ Создаю emoji‑pack ({cols}×{rows})..."
+    keyboard = build_grid_keyboard(
+        user_id=user_id,
+        width=width,
+        height=height,
+        mode="all",
     )
 
-    try:
-        fragments = process_image(path, cols, rows)
-
-        pack_link = await create_emoji_pack(
-            bot=bot,
-            fragments=fragments,
-            user_id=user_id,
-            user_username=callback.from_user.username,
-        )
-
-        await status.edit_text(
-            f"✅ Готово!\n\n"
-            f"🧩 Эмодзи: {len(fragments)}\n"
-            f"🔗 {pack_link}"
-        )
-
-    except Exception as e:
-        await status.edit_text(f"❌ {e}")
-        logger.exception("Pack creation error")
-
-    finally:
-        cleanup(path)
-        user_image_files.pop(user_id, None)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
 
 
-def build_grid_keyboard(user_id: int, width: int, height: int) -> InlineKeyboardMarkup:
+def build_grid_keyboard(
+    user_id: int,
+    width: int,
+    height: int,
+    mode: str = "optimal",  # optimal | all
+) -> InlineKeyboardMarkup:
     max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
     max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    buttons = []
-    row = []
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
 
     for cols in range(2, max_cols + 1):
         for rows in range(2, max_rows + 1):
             total = cols * rows
-            if 12 <= total <= 48:
-                row.append(
-                    InlineKeyboardButton(
-                        text=f"{cols}×{rows}",
-                        callback_data=f"grid_{user_id}_{cols}_{rows}",
-                    )
+
+            # Ограничения Telegram
+            if not (12 <= total <= 48):
+                continue
+
+            # ✅ В режиме optimal показываем только "хорошие" варианты
+            if mode == "optimal" and total not in {12, 16, 20, 24, 30, 36}:
+                continue
+
+            row.append(
+                InlineKeyboardButton(
+                    text=f"{cols}×{rows}",
+                    callback_data=f"grid_{user_id}_{cols}_{rows}",
                 )
-                if len(row) == 3:
-                    buttons.append(row)
-                    row = []
+            )
+
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
 
     if row:
         buttons.append(row)
+
+    # ✅ Кнопка "Показать все размеры"
+    if mode == "optimal":
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ Показать все размеры",
+                    callback_data=f"show_all_{user_id}",
+                )
+            ]
+        )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
