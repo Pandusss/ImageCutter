@@ -44,17 +44,15 @@ def render_progress(current: int, total: int, width: int = 16) -> str:
 
 
 # =====================================================
-# COMMANDS
+# COMMAND
 # =====================================================
 
 @dp.message(Command("start"))
 async def start(message: Message):
     await message.answer(
         "👋 Отправь изображение или анимацию.\n\n"
-        "Поддерживаются:\n"
         "🖼 PNG / JPG / WEBP — статичные emoji\n"
-        "🎞 GIF / MP4 — анимированные emoji\n\n"
-        "⚠️ Анимация: до 3 секунд, лучше 4–12 эмодзи."
+        "🎞 GIF / MP4 — анимированные emoji"
     )
 
 
@@ -67,34 +65,40 @@ async def handle_media(message: Message):
     status = await message.answer("⏳ Загружаю файл…")
 
     try:
-        file = message.photo[-1] if message.photo else message.document
+        # ---------------------------------------------
+        # Определяем источник
+        # ---------------------------------------------
+        if message.document:
+            file = message.document
+            filename = file.file_name
+        else:
+            file = message.photo[-1]
+            filename = f"photo_{file.file_unique_id}.png"
+
         file_info = await bot.get_file(file.file_id)
 
         temp_dir = tempfile.mkdtemp()
-        filename = file.file_name or "file"
         temp_path = os.path.join(temp_dir, filename)
 
         await bot.download_file(file_info.file_path, temp_path)
 
         ext = os.path.splitext(temp_path)[1].lower()
-
         is_animated = False
 
-        # =================================================
+        # ---------------------------------------------
         # STATIC IMAGES
-        # =================================================
+        # ---------------------------------------------
         if ext in {".png", ".jpg", ".jpeg", ".webp"}:
             img = Image.open(temp_path)
             width, height = img.size
             is_animated = getattr(img, "is_animated", False)
 
-        # =================================================
+        # ---------------------------------------------
         # TELEGRAM GIF (MP4)
-        # =================================================
+        # ---------------------------------------------
         elif ext in {".mp4", ".mov"}:
             is_animated = True
-            # виртуальный размер ТОЛЬКО для сетки
-            width = height = 1000
+            width = height = 1000  # виртуальный размер для сетки
 
         else:
             raise ValueError("Неподдерживаемый формат файла")
@@ -181,106 +185,45 @@ async def handle_grid(callback: CallbackQuery):
         )
 
     except Exception as e:
-        text = str(e)
-
-        if "Too Many Requests" in text or "Flood control exceeded" in text:
-            match = re.search(r"retry after (\d+)", text, re.IGNORECASE)
-            seconds = int(match.group(1)) if match else 1800
-            minutes = max(1, seconds // 60)
-
-            await status.edit_text(
-                "⏳ Telegram временно ограничил создание emoji‑packs.\n\n"
-                f"Попробуй снова через ~{minutes} минут."
-            )
-        else:
-            await status.edit_text(
-                "❌ Не удалось создать emoji‑pack.\n\n"
-                "Причины:\n"
-                "• анимация слишком длинная\n"
-                "• слишком много эмодзи\n"
-                "• файл слишком тяжёлый\n\n"
-                f"Ошибка: {e}"
-            )
-            logger.exception("Pack error")
+        await status.edit_text(f"❌ Ошибка: {e}")
+        logger.exception("Pack error")
 
     finally:
         cleanup(data["path"])
         user_files.pop(user_id, None)
 
 
-@dp.callback_query(F.data.startswith("show_all_"))
-async def show_all_sizes(callback: CallbackQuery):
-    _, _, user_id = callback.data.split("_", 2)
-    user_id = int(user_id)
-
-    data = user_files.get(user_id)
-    if not data:
-        await callback.answer("Файл не найден", show_alert=True)
-        return
-
-    keyboard = build_grid_keyboard(
-        user_id=user_id,
-        width=data["width"],
-        height=data["height"],
-        mode="all",
-    )
-
-    await callback.message.edit_reply_markup(reply_markup=keyboard)
-    await callback.answer()
-
-
 # =====================================================
 # KEYBOARD
 # =====================================================
 
-def build_grid_keyboard(
-    user_id: int,
-    width: int,
-    height: int,
-    mode: str = "optimal",
-) -> InlineKeyboardMarkup:
+def build_grid_keyboard(user_id: int, width: int, height: int, mode="optimal"):
     max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
     max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    optimal_totals = {12, 16, 20, 24, 30, 36}
-
-    all_btns = []
-    opt_btns = []
+    keyboard = []
 
     for c in range(2, max_cols + 1):
         for r in range(2, max_rows + 1):
             total = c * r
-            if not (4 <= total <= 48):
-                continue
+            if 4 <= total <= 48:
+                keyboard.append(
+                    InlineKeyboardButton(
+                        text=f"{c}×{r}",
+                        callback_data=f"grid_{user_id}_{c}_{r}",
+                    )
+                )
 
-            btn = InlineKeyboardButton(
-                text=f"{c}×{r}",
-                callback_data=f"grid_{user_id}_{c}_{r}",
-            )
-            all_btns.append(btn)
-            if total in optimal_totals:
-                opt_btns.append(btn)
-
-    source = opt_btns if (mode == "optimal" and opt_btns) else all_btns
-
-    keyboard, row = [], []
-    for btn in source:
+    rows, row = [], []
+    for btn in keyboard:
         row.append(btn)
         if len(row) == 3:
-            keyboard.append(row)
+            rows.append(row)
             row = []
     if row:
-        keyboard.append(row)
+        rows.append(row)
 
-    if mode == "optimal" and opt_btns and len(all_btns) > len(opt_btns):
-        keyboard.append(
-            [InlineKeyboardButton(
-                text="➕ Показать все размеры",
-                callback_data=f"show_all_{user_id}",
-            )]
-        )
-
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # =====================================================
