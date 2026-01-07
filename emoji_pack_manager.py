@@ -15,11 +15,22 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]
 
 async def create_emoji_pack(
     bot: Bot,
-    fragments: List[Image.Image],
+    fragments: List[str | Image.Image],
     user_id: int,
     user_username: str | None,
     progress_cb: ProgressCallback | None = None,
+    is_animated: bool = False,
 ) -> str:
+    """
+    fragments:
+      - STATIC  -> List[PIL.Image]
+      - VIDEO   -> List[path_to_webm]
+
+    is_animated:
+      - False -> STATIC emoji (PNG)
+      - True  -> VIDEO emoji (WEBM)
+    """
+
     if not fragments:
         raise ValueError("Нет фрагментов")
 
@@ -31,15 +42,31 @@ async def create_emoji_pack(
     files: list[str] = []
 
     try:
-        # сохраняем картинки
-        for i, img in enumerate(fragments):
-            path = os.path.join(temp_dir, f"{i}.png")
-            img.save(path, "PNG")
-            files.append(path)
+        # =================================================
+        # PREPARE FILES
+        # =================================================
+        if is_animated:
+            # fragments = paths to .webm
+            for path in fragments:
+                if not os.path.exists(path):
+                    raise ValueError("WEBM файл не найден")
+                files.append(path)
+        else:
+            # fragments = PIL images
+            for i, img in enumerate(fragments):
+                path = os.path.join(temp_dir, f"{i}.png")
+                img.save(path, "PNG")
+                files.append(path)
 
         total = len(files)
 
-        # создаём набор (1-й эмодзи)
+        sticker_format = (
+            StickerFormat.VIDEO if is_animated else StickerFormat.STATIC
+        )
+
+        # =================================================
+        # CREATE STICKER SET (FIRST EMOJI)
+        # =================================================
         await bot(
             CreateNewStickerSet(
                 user_id=user_id,
@@ -50,7 +77,7 @@ async def create_emoji_pack(
                     InputSticker(
                         sticker=FSInputFile(files[0]),
                         emoji_list=["▫️"],
-                        format=StickerFormat.STATIC,
+                        format=sticker_format,
                     )
                 ],
             )
@@ -59,7 +86,9 @@ async def create_emoji_pack(
         if progress_cb:
             await progress_cb(1, total)
 
-        # добавляем остальные
+        # =================================================
+        # ADD REST
+        # =================================================
         for i, path in enumerate(files[1:], start=2):
             await bot(
                 AddStickerToSet(
@@ -68,7 +97,7 @@ async def create_emoji_pack(
                     sticker=InputSticker(
                         sticker=FSInputFile(path),
                         emoji_list=["▫️"],
-                        format=StickerFormat.STATIC,
+                        format=sticker_format,
                     ),
                 )
             )
@@ -79,12 +108,16 @@ async def create_emoji_pack(
         return f"https://t.me/addemoji/{pack_name}"
 
     finally:
-        for f in files:
+        # =================================================
+        # CLEANUP (only PNGs we created)
+        # =================================================
+        if not is_animated:
+            for f in files:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
             try:
-                os.remove(f)
+                os.rmdir(temp_dir)
             except Exception:
                 pass
-        try:
-            os.rmdir(temp_dir)
-        except Exception:
-            pass
