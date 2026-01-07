@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import re
 import tempfile
 
 from aiogram import Bot, Dispatcher, F
@@ -29,40 +28,24 @@ user_files: dict[int, dict] = {}
 
 
 # =====================================================
-# PROGRESS BAR
-# =====================================================
-
-def render_progress(current: int, total: int, width: int = 16) -> str:
-    percent = int(current / total * 100)
-    filled = int(width * percent / 100)
-    bar = "█" * filled + "░" * (width - filled)
-    return (
-        "🧩 Создаю emoji‑pack\n"
-        f"{bar} {percent}%\n"
-        f"{current} / {total}"
-    )
-
-
-# =====================================================
-# COMMAND
+# START
 # =====================================================
 
 @dp.message(Command("start"))
 async def start(message: Message):
     await message.answer(
-        "👋 Отправь изображение или анимацию.\n\n"
-        "🖼 PNG / JPG / WEBP — статичные emoji\n"
-        "🎞 GIF / MP4 — анимированные emoji"
+        "Отправь изображение или анимацию.\n"
+        "PNG / JPG / WEBP / GIF / MP4"
     )
 
 
 # =====================================================
-# MEDIA HANDLER
+# MEDIA
 # =====================================================
 
 @dp.message(F.photo | F.document)
 async def handle_media(message: Message):
-    status = await message.answer("⏳ Загружаю файл…")
+    msg = await message.answer("⏳ Загружаю файл…")
 
     try:
         if message.document:
@@ -75,55 +58,47 @@ async def handle_media(message: Message):
         file_info = await bot.get_file(file.file_id)
 
         temp_dir = tempfile.mkdtemp()
-        temp_path = os.path.join(temp_dir, filename)
+        path = os.path.join(temp_dir, filename)
 
-        await bot.download_file(file_info.file_path, temp_path)
+        await bot.download_file(file_info.file_path, path)
 
-        ext = os.path.splitext(temp_path)[1].lower()
-        is_animated = False
+        ext = os.path.splitext(path)[1].lower()
+        animated = False
 
-        # -------------------------------
-        # STATIC IMAGE
-        # -------------------------------
         if ext in {".png", ".jpg", ".jpeg", ".webp"}:
-            img = Image.open(temp_path)
+            img = Image.open(path)
             width, height = img.size
-            is_animated = getattr(img, "is_animated", False)
+            animated = getattr(img, "is_animated", False)
 
-        # -------------------------------
-        # TELEGRAM GIF (MP4)
-        # -------------------------------
         elif ext in {".mp4", ".mov"}:
-            is_animated = True
-            width = height = 1000  # виртуальный размер
+            animated = True
+            width = height = 1000  # фиктивный размер
 
         else:
             raise ValueError("Неподдерживаемый формат")
 
         user_files[message.from_user.id] = {
-            "path": temp_path,
-            "animated": is_animated,
+            "path": path,
+            "animated": animated,
             "width": width,
             "height": height,
         }
 
-        keyboard = build_grid_keyboard(
-            user_id=message.from_user.id,
-            width=width,
-            height=height,
-            mode="optimal",
+        keyboard = build_keyboard(
+            message.from_user.id,
+            width,
+            height,
+            show_all=False,
         )
 
-        label = "🎞 Анимация" if is_animated else "🖼 Изображение"
-
-        await status.edit_text(
-            f"{label}\n\nВыбери размер сетки:",
+        await msg.edit_text(
+            "🎞 Анимация" if animated else "🖼 Изображение",
             reply_markup=keyboard,
         )
 
     except Exception as e:
-        await status.edit_text(f"❌ {e}")
-        logger.exception("Media error")
+        await msg.edit_text(f"❌ {e}")
+        logger.exception("media error")
 
 
 # =====================================================
@@ -131,9 +106,9 @@ async def handle_media(message: Message):
 # =====================================================
 
 @dp.callback_query(F.data.startswith("grid_"))
-async def handle_grid(callback: CallbackQuery):
-    _, user_id, cols, rows = callback.data.split("_")
-    user_id, cols, rows = int(user_id), int(cols), int(rows)
+async def on_grid(callback: CallbackQuery):
+    _, user_id, c, r = callback.data.split("_")
+    user_id, c, r = int(user_id), int(c), int(r)
 
     if callback.from_user.id != user_id:
         await callback.answer("Не твоё", show_alert=True)
@@ -147,59 +122,53 @@ async def handle_grid(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_reply_markup()
 
-    status = await callback.message.edit_text("🧩 Подготовка…")
+    status = await callback.message.edit_text("🧩 Генерирую…")
 
     try:
         if data["animated"]:
-            fragments = process_animated(data["path"], cols, rows)
-            is_animated = True
+            parts = process_animated(data["path"], c, r)
+            animated = True
         else:
-            fragments = process_image(data["path"], cols, rows)
-            is_animated = False
+            parts = process_image(data["path"], c, r)
+            animated = False
 
-        total = len(fragments)
-
-        async def progress_cb(c, t):
-            await status.edit_text(render_progress(c, t))
+        async def progress(i, t):
+            await status.edit_text(f"{i}/{t}")
 
         link = await create_emoji_pack(
             bot=bot,
-            fragments=fragments,
+            fragments=parts,
             user_id=user_id,
             user_username=callback.from_user.username,
-            progress_cb=progress_cb,
-            is_animated=is_animated,
+            progress_cb=progress,
+            is_animated=animated,
         )
 
-        await status.edit_text(
-            f"✅ Готово!\n\n"
-            f"🧩 Эмодзи: {total}\n"
-            f"🔗 {link}"
-        )
+        await status.edit_text(f"✅ Готово\n{link}")
 
     except Exception as e:
         await status.edit_text(f"❌ {e}")
-        logger.exception("Pack error")
+        logger.exception("pack error")
 
     finally:
         cleanup(data["path"])
         user_files.pop(user_id, None)
 
 
-@dp.callback_query(F.data.startswith("show_all_"))
+@dp.callback_query(F.data.startswith("all_"))
 async def show_all(callback: CallbackQuery):
-    user_id = int(callback.data.split("_")[-1])
+    user_id = int(callback.data.split("_")[1])
     data = user_files.get(user_id)
 
     if not data:
-        await callback.answer("Файл не найден", show_alert=True)
+        await callback.answer()
         return
 
-    keyboard = build_grid_keyboard(
-        user_id=user_id,
-        width=data["width"],
-        height=data["height"],
-        mode="all",
+    keyboard = build_keyboard(
+        user_id,
+        data["width"],
+        data["height"],
+        show_all=True,
     )
 
     await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -210,46 +179,39 @@ async def show_all(callback: CallbackQuery):
 # KEYBOARD
 # =====================================================
 
-def build_grid_keyboard(user_id: int, width: int, height: int, mode: str):
-    max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
-    max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
+def build_keyboard(user_id: int, width: int, height: int, show_all: bool):
+    max_c = min(width // MIN_FRAGMENT_SIZE, 15)
+    max_r = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    optimal_totals = {12, 16, 20, 24, 30, 36}
+    buttons = []
 
-    all_btns = []
-    opt_btns = []
-
-    for c in range(2, max_cols + 1):
-        for r in range(2, max_rows + 1):
+    for c in range(2, max_c + 1):
+        for r in range(2, max_r + 1):
             total = c * r
-            if not (4 <= total <= 48):
+            if not show_all and total not in {4, 6, 9, 12, 16}:
                 continue
-
-            btn = InlineKeyboardButton(
-                text=f"{c}×{r}",
-                callback_data=f"grid_{user_id}_{c}_{r}",
-            )
-
-            all_btns.append(btn)
-            if total in optimal_totals:
-                opt_btns.append(btn)
-
-    source = opt_btns if mode == "optimal" and opt_btns else all_btns
+            if 4 <= total <= 48:
+                buttons.append(
+                    InlineKeyboardButton(
+                        text=f"{c}×{r}",
+                        callback_data=f"grid_{user_id}_{c}_{r}",
+                    )
+                )
 
     rows, row = [], []
-    for btn in source:
-        row.append(btn)
+    for b in buttons:
+        row.append(b)
         if len(row) == 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
 
-    if mode == "optimal" and len(all_btns) > len(opt_btns):
+    if not show_all:
         rows.append([
             InlineKeyboardButton(
                 text="➕ Показать все размеры",
-                callback_data=f"show_all_{user_id}",
+                callback_data=f"all_{user_id}",
             )
         ])
 
@@ -269,7 +231,7 @@ def cleanup(path: str):
 
 
 # =====================================================
-# ENTRYPOINT
+# RUN
 # =====================================================
 
 async def main():
