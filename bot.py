@@ -72,9 +72,14 @@ async def handle_media(message: Message):
             filename = file.file_name
         else:
             file = message.photo[-1]
-            filename = f"photo_{file.file_unique_id}.png"
+            filename = None
 
         file_info = await bot.get_file(file.file_id)
+
+        # если Telegram не дал имя — генерируем сами
+        if not filename:
+            ext = os.path.splitext(file_info.file_path)[1] or ".bin"
+            filename = f"file_{file.file_unique_id}{ext}"
 
         temp_dir = tempfile.mkdtemp()
         temp_path = os.path.join(temp_dir, filename)
