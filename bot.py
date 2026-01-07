@@ -67,11 +67,16 @@ async def handle_media(message: Message):
     status = await message.answer("⏳ Загружаю файл…")
 
     try:
-        file = message.photo[-1] if message.photo else message.document
+        if message.document:
+            file = message.document
+            filename = file.file_name
+        else:
+            file = message.photo[-1]
+            filename = f"photo_{file.file_unique_id}.png"
+
         file_info = await bot.get_file(file.file_id)
 
         temp_dir = tempfile.mkdtemp()
-        filename = file.file_name or "file"
         temp_path = os.path.join(temp_dir, filename)
 
         await bot.download_file(file_info.file_path, temp_path)
