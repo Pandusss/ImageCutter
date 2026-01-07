@@ -71,17 +71,37 @@ async def handle_media(message: Message):
         file_info = await bot.get_file(file.file_id)
 
         temp_dir = tempfile.mkdtemp()
-        temp_path = os.path.join(temp_dir, file.file_name or "file")
+        filename = file.file_name or "file"
+        temp_path = os.path.join(temp_dir, filename)
 
         await bot.download_file(file_info.file_path, temp_path)
 
-        img = Image.open(temp_path)
-        width, height = img.size
+        ext = os.path.splitext(temp_path)[1].lower()
+
+        is_animated = False
+        width = height = None
+
+        # =============================
+        # STATIC IMAGES
+        # =============================
+        if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+            img = Image.open(temp_path)
+            width, height = img.size
+            is_animated = getattr(img, "is_animated", False)
+
+        # =============================
+        # TELEGRAM "GIF" (actually MP4)
+        # =============================
+        elif ext in {".mp4", ".mov"}:
+            is_animated = True
+            # размеры узнаем позже через ffmpeg
+            width = height = 100  # заглушка для клавиатуры
+
+        else:
+            raise ValueError("Неподдерживаемый формат файла")
 
         if width < MIN_FRAGMENT_SIZE or height < MIN_FRAGMENT_SIZE:
-            raise ValueError("Изображение слишком маленькое")
-
-        is_animated = getattr(img, "is_animated", False)
+            raise ValueError("Файл слишком маленький")
 
         user_files[message.from_user.id] = {
             "path": temp_path,
@@ -100,7 +120,7 @@ async def handle_media(message: Message):
         label = "🎞 Анимация" if is_animated else "🖼 Изображение"
 
         await status.edit_text(
-            f"{label}\n📐 {width}×{height}\n\nВыбери размер сетки:",
+            f"{label}\n\nВыбери размер сетки:",
             reply_markup=keyboard,
         )
 

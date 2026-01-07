@@ -1,7 +1,7 @@
 import os
 import tempfile
 import subprocess
-from PIL import Image, ImageSequence
+from PIL import Image
 
 from config import EMOJI_SIZE
 
@@ -12,28 +12,50 @@ FPS = 30
 
 def process_animated(path: str, cols: int, rows: int) -> list[str]:
     """
-    Обрабатывает GIF / animated WEBP.
+    Поддерживает:
+      - GIF
+      - animated WEBP
+      - MP4 (Telegram GIF)
+
     Возвращает список путей к .webm (по одному на emoji).
     """
 
-    img = Image.open(path)
-
-    frames = []
-    for i, frame in enumerate(ImageSequence.Iterator(img)):
-        if i >= MAX_FRAMES:
-            break
-        frames.append(frame.convert("RGBA"))
-
-    if not frames:
-        raise ValueError("Анимация не содержит кадров")
-
     temp_dir = tempfile.mkdtemp()
 
+    # =================================================
+    # 1. EXTRACT FRAMES (ffmpeg handles everything)
+    # =================================================
+    frames_dir = os.path.join(temp_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+
+    extract_frames(path, frames_dir)
+
+    frame_files = sorted(
+        f for f in os.listdir(frames_dir) if f.endswith(".png")
+    )
+
+    if not frame_files:
+        raise ValueError("Не удалось извлечь кадры из анимации")
+
+    # ограничиваем длительность
+    frame_files = frame_files[:MAX_FRAMES]
+
+    frames = [
+        Image.open(os.path.join(frames_dir, f)).convert("RGBA")
+        for f in frame_files
+    ]
+
+    # =================================================
+    # 2. FIT TO GRID
+    # =================================================
     prepared_frames = [
         fit_to_grid(frame, cols, rows)
         for frame in frames
     ]
 
+    # =================================================
+    # 3. SPLIT EACH FRAME
+    # =================================================
     fragments_per_frame = [
         split(frame, cols, rows)
         for frame in prepared_frames
@@ -42,6 +64,9 @@ def process_animated(path: str, cols: int, rows: int) -> list[str]:
     total_parts = cols * rows
     output_files: list[str] = []
 
+    # =================================================
+    # 4. BUILD WEBM PER EMOJI
+    # =================================================
     for i in range(total_parts):
         part_dir = os.path.join(temp_dir, f"part_{i}")
         os.makedirs(part_dir, exist_ok=True)
@@ -61,6 +86,20 @@ def process_animated(path: str, cols: int, rows: int) -> list[str]:
 # =====================================================
 # HELPERS
 # =====================================================
+
+def extract_frames(src: str, out_dir: str):
+    """
+    Извлекает PNG‑кадры из любого видео/гифки
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", src,
+        "-vf", f"fps={FPS}",
+        os.path.join(out_dir, "%03d.png"),
+    ]
+    subprocess.run(cmd, check=True)
+
 
 def fit_to_grid(image: Image.Image, cols: int, rows: int) -> Image.Image:
     gw, gh = cols * EMOJI_SIZE, rows * EMOJI_SIZE
@@ -89,6 +128,9 @@ def split(image: Image.Image, cols: int, rows: int):
 
 
 def encode_webm(frame_dir: str, out_path: str):
+    """
+    Кодирует WEBM под требования Telegram emoji
+    """
     cmd = [
         "ffmpeg",
         "-y",
