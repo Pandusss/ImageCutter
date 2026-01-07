@@ -65,9 +65,6 @@ async def handle_media(message: Message):
     status = await message.answer("⏳ Загружаю файл…")
 
     try:
-        # ---------------------------------------------
-        # Определяем источник
-        # ---------------------------------------------
         if message.document:
             file = message.document
             filename = file.file_name
@@ -85,26 +82,23 @@ async def handle_media(message: Message):
         ext = os.path.splitext(temp_path)[1].lower()
         is_animated = False
 
-        # ---------------------------------------------
-        # STATIC IMAGES
-        # ---------------------------------------------
+        # -------------------------------
+        # STATIC IMAGE
+        # -------------------------------
         if ext in {".png", ".jpg", ".jpeg", ".webp"}:
             img = Image.open(temp_path)
             width, height = img.size
             is_animated = getattr(img, "is_animated", False)
 
-        # ---------------------------------------------
+        # -------------------------------
         # TELEGRAM GIF (MP4)
-        # ---------------------------------------------
+        # -------------------------------
         elif ext in {".mp4", ".mov"}:
             is_animated = True
-            width = height = 1000  # виртуальный размер для сетки
+            width = height = 1000  # виртуальный размер
 
         else:
-            raise ValueError("Неподдерживаемый формат файла")
-
-        if width < MIN_FRAGMENT_SIZE or height < MIN_FRAGMENT_SIZE:
-            raise ValueError("Файл слишком маленький")
+            raise ValueError("Неподдерживаемый формат")
 
         user_files[message.from_user.id] = {
             "path": temp_path,
@@ -146,7 +140,7 @@ async def handle_grid(callback: CallbackQuery):
         return
 
     data = user_files.get(user_id)
-    if not data or not os.path.exists(data["path"]):
+    if not data:
         await callback.answer("Файл не найден", show_alert=True)
         return
 
@@ -157,7 +151,6 @@ async def handle_grid(callback: CallbackQuery):
 
     try:
         if data["animated"]:
-            await status.edit_text("🎞 Обрабатываю анимацию…")
             fragments = process_animated(data["path"], cols, rows)
             is_animated = True
         else:
@@ -166,10 +159,10 @@ async def handle_grid(callback: CallbackQuery):
 
         total = len(fragments)
 
-        async def progress_cb(current: int, total: int):
-            await status.edit_text(render_progress(current, total))
+        async def progress_cb(c, t):
+            await status.edit_text(render_progress(c, t))
 
-        pack_link = await create_emoji_pack(
+        link = await create_emoji_pack(
             bot=bot,
             fragments=fragments,
             user_id=user_id,
@@ -181,11 +174,11 @@ async def handle_grid(callback: CallbackQuery):
         await status.edit_text(
             f"✅ Готово!\n\n"
             f"🧩 Эмодзи: {total}\n"
-            f"🔗 {pack_link}"
+            f"🔗 {link}"
         )
 
     except Exception as e:
-        await status.edit_text(f"❌ Ошибка: {e}")
+        await status.edit_text(f"❌ {e}")
         logger.exception("Pack error")
 
     finally:
@@ -193,35 +186,72 @@ async def handle_grid(callback: CallbackQuery):
         user_files.pop(user_id, None)
 
 
+@dp.callback_query(F.data.startswith("show_all_"))
+async def show_all(callback: CallbackQuery):
+    user_id = int(callback.data.split("_")[-1])
+    data = user_files.get(user_id)
+
+    if not data:
+        await callback.answer("Файл не найден", show_alert=True)
+        return
+
+    keyboard = build_grid_keyboard(
+        user_id=user_id,
+        width=data["width"],
+        height=data["height"],
+        mode="all",
+    )
+
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+
 # =====================================================
 # KEYBOARD
 # =====================================================
 
-def build_grid_keyboard(user_id: int, width: int, height: int, mode="optimal"):
+def build_grid_keyboard(user_id: int, width: int, height: int, mode: str):
     max_cols = min(width // MIN_FRAGMENT_SIZE, 15)
     max_rows = min(height // MIN_FRAGMENT_SIZE, 15)
 
-    keyboard = []
+    optimal_totals = {12, 16, 20, 24, 30, 36}
+
+    all_btns = []
+    opt_btns = []
 
     for c in range(2, max_cols + 1):
         for r in range(2, max_rows + 1):
             total = c * r
-            if 4 <= total <= 48:
-                keyboard.append(
-                    InlineKeyboardButton(
-                        text=f"{c}×{r}",
-                        callback_data=f"grid_{user_id}_{c}_{r}",
-                    )
-                )
+            if not (4 <= total <= 48):
+                continue
+
+            btn = InlineKeyboardButton(
+                text=f"{c}×{r}",
+                callback_data=f"grid_{user_id}_{c}_{r}",
+            )
+
+            all_btns.append(btn)
+            if total in optimal_totals:
+                opt_btns.append(btn)
+
+    source = opt_btns if mode == "optimal" and opt_btns else all_btns
 
     rows, row = [], []
-    for btn in keyboard:
+    for btn in source:
         row.append(btn)
         if len(row) == 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+
+    if mode == "optimal" and len(all_btns) > len(opt_btns):
+        rows.append([
+            InlineKeyboardButton(
+                text="➕ Показать все размеры",
+                callback_data=f"show_all_{user_id}",
+            )
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
